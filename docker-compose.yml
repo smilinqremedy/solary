@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  # ============================================================================
+  # EMQX MQTT Broker (with TLS 8883 support and management dashboard)
+  # ============================================================================
+  emqx:
+    image: emqx/emqx:5.6.1
+    container_name: emqx_solar_broker
+    restart: unless-stopped
+    ports:
+      - "1883:1883"     # Insecure MQTT (dev)
+      - "8883:8883"     # MQTTS TLS (production)
+      - "18083:18083"   # Web Dashboard (default user: admin / public)
+    environment:
+      - "EMQX_NODE__NAME=emqx@node.solar.internal"
+      - "EMQX_AUTHENTICATION__1__ENABLE=false" # Allow open auth in dev or enable JWT
+    volumes:
+      - emqx_data:/opt/emqx/data
+      - emqx_log:/opt/emqx/log
+
+  # ============================================================================
+  # TimescaleDB / PostgreSQL (Time-series power metrics & Relational CRM)
+  # ============================================================================
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: timescaledb_solar
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_password
+      POSTGRES_DB: solar_intelligence
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+
+  # ============================================================================
+  # Redis (Ephemeral device state, 30-min rate limits, alert cooldowns)
+  # ============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: redis_solar_cache
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # ============================================================================
+  # Cloud Backend: Ingestion Worker, Rules Engine & Meta WhatsApp API
+  # ============================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: backend_solar_intelligence
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres_password@timescaledb:5432/solar_intelligence
+      - SYNC_DATABASE_URL=postgresql://postgres:postgres_password@timescaledb:5432/solar_intelligence
+      - REDIS_URL=redis://redis:6379/0
+      - MQTT_BROKER_HOST=emqx
+      - MQTT_BROKER_PORT=1883
+      - MQTT_USERNAME=admin
+      - MQTT_PASSWORD=public
+      - WHATSAPP_TOKEN=EAAX...meta_cloud_api_token...
+      - WHATSAPP_PHONE_NUMBER_ID=109876543210987
+      - WHATSAPP_APP_SECRET=meta_app_secret_hex
+      - WHATSAPP_VERIFY_TOKEN=solar_intelligence_verify_token_2026
+      - FUEL_PRICE_NGN=1150.0
+    depends_on:
+      - timescaledb
+      - redis
+      - emqx
+
+volumes:
+  emqx_data:
+  emqx_log:
+  timescaledb_data:
+  redis_data:
